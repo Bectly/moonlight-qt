@@ -1,5 +1,6 @@
 #include "pacer.h"
 #include "streaming/streamutils.h"
+#include "utils.h"
 
 #ifdef Q_OS_WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -38,7 +39,8 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_VsyncRenderer(renderer),
     m_MaxVideoFps(0),
     m_DisplayFps(0),
-    m_VideoStats(videoStats)
+    m_VideoStats(videoStats),
+    m_FlushThreshold(0)
 {
 
 }
@@ -230,6 +232,18 @@ void Pacer::handleVsync(int timeUntilNextVsyncMillis)
         m_PacingQueueHistory.enqueue(m_PacingQueue.count());
     }
 
+    if (m_FlushThreshold > 0 && m_PacingQueue.count() >= m_FlushThreshold) {
+        // A burst arrived after a network stall: jump to the newest frame once and forget the
+        // backlog history, so the queue does not get trimmed a second time half a second later.
+        frameDropTarget = 1;
+        m_PacingQueueHistory.clear();
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Pacer: flush, queue %d", (int)m_PacingQueue.count());
+    }
+    else if (m_PacingQueue.count() > frameDropTarget) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Pacer: drop %d, queue %d, target %d",
+                    (int)m_PacingQueue.count() - frameDropTarget, (int)m_PacingQueue.count(), frameDropTarget);
+    }
+
     // Catch up if we're several frames ahead
     while (m_PacingQueue.count() > frameDropTarget) {
         AVFrame* frame = m_PacingQueue.dequeue();
@@ -263,6 +277,10 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing)
 {
     m_MaxVideoFps = maxVideoFps;
     m_DisplayFps = StreamUtils::getDisplayRefreshRate(window);
+    if (!Utils::getEnvironmentVariableOverride("PACER_FLUSH", &m_FlushThreshold) || m_FlushThreshold < 2) {
+        m_FlushThreshold = 0;
+    }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Pacer: flush threshold %d (0 = stock behaviour)", m_FlushThreshold);
     m_RendererAttributes = m_VsyncRenderer->getRendererAttributes();
 
     if (enablePacing) {
@@ -395,6 +413,7 @@ void Pacer::dropFrameForEnqueue(QQueue<AVFrame*>& queue)
 {
     SDL_assert(queue.size() <= MAX_QUEUED_FRAMES);
     if (queue.size() == MAX_QUEUED_FRAMES) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Pacer: queue full, dropping oldest frame on enqueue");
         AVFrame* frame = queue.dequeue();
         av_frame_free(&frame);
     }

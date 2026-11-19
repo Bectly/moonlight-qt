@@ -75,4 +75,8 @@ private:
     int m_DisplayFps;
     PVIDEO_STATS m_VideoStats;
     int m_RendererAttributes;
+
+    // PACER_FLUSH=N (env): when N or more frames are waiting in the pacing queue, show the newest one right away
+    // instead of draining the backlog and dropping again once the 500 ms history window turns strict.
+    int m_FlushThreshold;
 };
